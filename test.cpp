@@ -1,4 +1,4 @@
-// Isahang code - OV5640 Camera Live Stream
+// Isahang code - OV5640 Camera Live Stream (OPTIMIZED for low latency)
 // AI Thinker ESP32-CAM pinout
 
 #include "esp_camera.h"
@@ -32,6 +32,9 @@ void setup() {
   Serial.println();
   Serial.println("Initializing camera...");
 
+  // Mas mataas na CPU speed para mas mabilis mag-process
+  setCpuFrequencyMhz(240);
+
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer   = LEDC_TIMER_0;
@@ -53,15 +56,16 @@ void setup() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
+  config.grab_mode = CAMERA_GRAB_LATEST;  // laging kunin ang PINAKABAGONG frame, hindi yung nakapila
 
-  // Mas magaan na settings para hindi masyadong mabigat sa processing
+  // Mas maliit na resolution = mas mabilis, mas kaunting delay
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_SVGA;   // 800x600
-    config.jpeg_quality = 12;
+    config.frame_size = FRAMESIZE_VGA;    // 640x480 - balanced speed/quality
+    config.jpeg_quality = 15;             // mas mataas na number = mas maliit na file = mas mabilis
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_QVGA;   // 320x240
-    config.jpeg_quality = 15;
+    config.frame_size = FRAMESIZE_QVGA;   // 320x240 - pinaka-mabilis
+    config.jpeg_quality = 18;
     config.fb_count = 1;
   }
 
@@ -74,6 +78,11 @@ void setup() {
 
   sensor_t * s = esp_camera_sensor_get();
   Serial.printf("Detected sensor PID: 0x%x\n", s->id.PID);
+
+  // MAHALAGA: i-off ang WiFi power-saving mode - ito ang pinaka-malaking
+  // cause ng delay/lag sa ESP32 streaming. Nagpapatulog ang modem para
+  // makatipid ng battery, pero nagdudulot ito ng malaking latency.
+  WiFi.setSleep(false);
 
   WiFi.begin(ssid, password);
   Serial.print("Connecting to WiFi");
@@ -92,11 +101,15 @@ void loop() {
   WiFiClient client = server.available();
   if (!client) return;
 
+  client.setNoDelay(true);  // i-disable ang Nagle's algorithm - direktang ipadala
+                             // ang data imbes na hintayin mag-buffer pa
+
   Serial.println("New client connected");
 
-  client.println("HTTP/1.1 200 OK");
-  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
-  client.println();
+  // Isang malaking write imbes na maraming maliliit na println
+  // (bawat println ay separate network packet, may overhead)
+  client.print("HTTP/1.1 200 OK\r\n"
+               "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n");
 
   while (client.connected()) {
     camera_fb_t *fb = esp_camera_fb_get();
@@ -105,13 +118,14 @@ void loop() {
       break;
     }
 
-    client.println("--frame");
-    client.println("Content-Type: image/jpeg");
-    client.print("Content-Length: ");
-    client.println(fb->len);
-    client.println();
+    // Header + image sa mas kaunting writes
+    char header[128];
+    int headerLen = snprintf(header, sizeof(header),
+                              "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\n\r\n",
+                              fb->len);
+    client.write((const uint8_t*)header, headerLen);
     client.write(fb->buf, fb->len);
-    client.println();
+    client.write((const uint8_t*)"\r\n", 2);
 
     esp_camera_fb_return(fb);
 
