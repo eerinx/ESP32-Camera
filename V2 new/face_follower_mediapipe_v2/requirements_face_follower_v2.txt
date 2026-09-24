@@ -1,0 +1,6 @@
+# Face Follower V2 dependencies
+# Python 3.11 on Windows
+mediapipe==0.10.21
+numpy<2
+opencv-contrib-python<5
+requests
